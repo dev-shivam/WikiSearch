@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">WikiSearch</string>
+    <string name="hint_search_query">Search here…</string>
+    <string name="label_sample_title">Shivam Satija</string>
+    <string name="label_sample_description">He is a great android developer.</string>
+    <string name="label_visit_page"><![CDATA[Visit Page >]]></string>
+</resources>
