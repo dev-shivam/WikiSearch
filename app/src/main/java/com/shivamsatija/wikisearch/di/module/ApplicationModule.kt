@@ -8,19 +8,21 @@ import com.shivamsatija.wikisearch.BuildConfig
 import com.shivamsatija.wikisearch.data.remote.ApiService
 import com.shivamsatija.wikisearch.di.ApplicationContext
 import com.shivamsatija.wikisearch.di.BaseUrl
+import com.shivamsatija.wikisearch.di.OfflineInterceptor
+import com.shivamsatija.wikisearch.di.OnlineInterceptor
 import dagger.Module
 import dagger.Provides
 import io.reactivex.disposables.CompositeDisposable
-import okhttp3.Cache
-import okhttp3.Interceptor
-import okhttp3.OkHttpClient
-import okhttp3.Response
+import okhttp3.*
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.adapter.rxjava2.RxJava2CallAdapterFactory
 import retrofit2.converter.gson.GsonConverterFactory
+import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
+
 
 @Module
 open class ApplicationModule(
@@ -66,37 +68,72 @@ open class ApplicationModule(
 
     @Singleton
     @Provides
+    fun provideCache(): Cache {
+        val httpCacheDirectory = File(application.cacheDir, "wiki_cache")
+        val cacheSize: Long = 10 * 1024 * 1024 /* 10 mb data */
+        return Cache(httpCacheDirectory, cacheSize)
+    }
+
+    @OnlineInterceptor
+    @Singleton
+    @Provides
+    fun provideCacheInterceptor(): Interceptor {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                val response: Response = chain.proceed(chain.request())
+                return if (hasNetwork(application.applicationContext) == true) {
+                    val maxAge = 10 // read from cache for 10 seconds
+                    response.newBuilder()
+                        .header("Cache-Control", "public, max-age=$maxAge")
+                        .build()
+                } else {
+                    val maxStale = 60 * 60 * 24 * 28 // tolerate 4-weeks stale
+                    response.newBuilder()
+                        .header("Cache-Control", "public, only-if-cached, max-stale=$maxStale")
+                        .build()
+                }
+            }
+        }
+    }
+
+    @OfflineInterceptor
+    @Singleton
+    @Provides
+    fun provideOfflineCacheInterceptor(): Interceptor {
+        return object : Interceptor {
+            override fun intercept(chain: Interceptor.Chain): Response {
+                return try {
+                    chain.proceed(chain.request())
+                } catch (e: Exception) {
+                    val cacheControl = CacheControl.Builder()
+                        .onlyIfCached()
+                        .maxStale(1, TimeUnit.DAYS)
+                        .build()
+                    val offlineRequest: Request = chain.request().newBuilder()
+                        .cacheControl(cacheControl)
+                        .build()
+                    chain.proceed(offlineRequest)
+                }
+            }
+        }
+    }
+
+    @Singleton
+    @Provides
     fun provideOkHttpClient(
+        cache: Cache,
+        @OnlineInterceptor cacheInterceptor: Interceptor,
+        @OfflineInterceptor offlineHttpLoggingInterceptor: Interceptor,
         httpLoggingInterceptor: HttpLoggingInterceptor
     ): OkHttpClient {
 
-        val cacheSize = (5 * 1024 * 1024).toLong()
-        val cache = Cache(application.cacheDir, cacheSize)
-
         return OkHttpClient.Builder()
-            .addInterceptor(httpLoggingInterceptor)
             .cache(cache)
+            .addNetworkInterceptor(cacheInterceptor)
+            .addInterceptor(offlineHttpLoggingInterceptor)
+            .addInterceptor(httpLoggingInterceptor)
             .readTimeout(10_000, TimeUnit.MILLISECONDS)
             .connectTimeout(10_000, TimeUnit.MILLISECONDS)
-            .addInterceptor(object : Interceptor {
-                override fun intercept(chain: Interceptor.Chain): Response {
-                    val request = chain.request()
-                    if (hasNetwork(application.applicationContext) == true) {
-                        request.newBuilder()
-                            .header(
-                                "Cache-Control",
-                                "public, max-age=" + 5)
-                            .build()
-                    } else {
-                        request.newBuilder()
-                            .header(
-                                "Cache-Control",
-                                "public, only-if-cached, max-stale=" + 60 * 60 * 24 * 7
-                            ).build()
-                    }
-                    return chain.proceed(request)
-                }
-            })
             .build()
     }
 
